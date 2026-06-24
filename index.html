@@ -303,7 +303,7 @@
     .history-text {
       font-size: 0.82rem; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis;
-      display: -webkit-box; -webkit-line-clamp: 2;
+      display: -webkit-box; line-clamp: 2; -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       line-height: 1.5;
     }
@@ -604,18 +604,19 @@
 
       try {
         const response = await fetchWithRetry('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`
-  },
-  body: JSON.stringify({
-    model: 'gemini-2.0-flash',
-    max_tokens: 1024,
-    stream: true,
-    messages: [{ role: 'user', content: prompt }],
-  }),
-});
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream', // Prevent network buffering
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: 'gemini-2.0-flash',
+            max_tokens: 1024,
+            stream: true,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+        });
 
         if (!response.ok) {
           const err = await response.json();
@@ -626,6 +627,7 @@
         const decoder = new TextDecoder();
         let fullText = '';
         let buffer = '';
+        let lastUpdate = 0; // Timer for throttling DOM updates
 
         while (true) {
           const { done, value } = await reader.read();
@@ -636,24 +638,34 @@
           buffer = lines.pop();
 
           for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6).trim();
+            // More robust data parsing (handles missing spaces)
+            if (!line.startsWith('data:')) continue;
+            const data = line.replace(/^data:\s*/, '').trim();
             if (data === '[DONE]') continue;
+            
             try {
               const parsed = JSON.parse(data);
-              // Gemini/OpenAI format:
-if (parsed.choices?.[0]?.delta?.content) {
-  fullText += parsed.choices[0].delta.content;
-                outputBody.innerHTML = escapeHtml(fullText) + '<span class="streaming-cursor"></span>';
-                outputBody.scrollTop = outputBody.scrollHeight;
-                setOutputWordCount(fullText);
+              
+              if (parsed.choices?.[0]?.delta?.content !== undefined) {
+                fullText += parsed.choices[0].delta.content;
+                
+                // Throttle DOM updates to ~60 FPS to prevent UI freezing
+                const now = Date.now();
+                if (now - lastUpdate > 16) {
+                  outputBody.innerHTML = escapeHtml(fullText) + '<span class="streaming-cursor"></span>';
+                  outputBody.scrollTop = outputBody.scrollHeight;
+                  setOutputWordCount(fullText);
+                  lastUpdate = now;
+                }
               }
             } catch {}
           }
         }
 
+        // Final flush to guarantee the last few tokens are rendered
         outputBody.innerHTML = escapeHtml(fullText);
         setOutputWordCount(fullText);
+        
         document.getElementById('copyBtn').disabled = false;
         document.getElementById('toneIndicator').textContent = currentTone;
 
@@ -672,7 +684,6 @@ if (parsed.choices?.[0]?.delta?.content) {
         setLoading(false);
       }
     }
-
     function escapeHtml(str) {
       return str
         .replace(/&/g, '&amp;')
